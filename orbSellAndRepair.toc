@@ -1,8 +1,9 @@
-## Interface: 80200
+## Interface: 16001
 ## Title: orbSellAndRepair
 ## Notes: Automatically sell your gray items and repair your equipment when you visit a merchant.
+## Notes-frFR: Vend automatiquement les objets gris et répare votre équipement chez un marchand.
 ## Author: sugatasei
-## Version: 1.0.1
+## Version: 2.0.0
 ## SavedVariablesPerCharacter: orbSellAndRepair_settings
 
 locales/en.lua

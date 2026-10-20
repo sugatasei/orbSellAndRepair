@@ -1,4 +1,4 @@
-local _, L = ...;
+local addonName, L = ...
 
 local CHARACTER_DEFAULTS = {
     AutoRepair = true,
@@ -11,189 +11,170 @@ local CHARACTER_DEFAULTS = {
 -- Helpers
 --------------------------------------------------------------------------------
 
-local function selfMessage(v) 
-    DEFAULT_CHAT_FRAME:AddMessage(v, 1.0, 1.0, 1.0);
+local function selfMessage(v)
+    DEFAULT_CHAT_FRAME:AddMessage(v, 1.0, 1.0, 1.0)
 end
 
+local function GetMetadata(key)
+    if C_AddOns and C_AddOns.GetAddOnMetadata then
+        return C_AddOns.GetAddOnMetadata(addonName, key)
+    end
+    return GetAddOnMetadata and GetAddOnMetadata(addonName, key)
+end
+
+local POOR_QUALITY = (Enum and Enum.ItemQuality and Enum.ItemQuality.Poor) or 0
+local NUM_BAGS = NUM_BAG_SLOTS or 4
+
 --------------------------------------------------------------------------------
--- Settings
+-- Settings (saved variables)
 --------------------------------------------------------------------------------
 
 local function LoadSettings()
-    
-    if orbSellAndRepair_settings == nil then
+    if type(orbSellAndRepair_settings) ~= "table" then
         orbSellAndRepair_settings = {}
     end
-
-    local function CopyDefaults(src, dst)
-        if type(src) ~= "table" then
-            return {}
+    for k, v in pairs(CHARACTER_DEFAULTS) do
+        if type(orbSellAndRepair_settings[k]) ~= type(v) then
+            orbSellAndRepair_settings[k] = v
         end
-        if type(dst) ~= "table" then
-            dst = {}
-        end
-
-        for k, v in pairs(src) do
-            if type(v) == "table" then
-                dst[k] = CopyDefaults(v, dst[k])
-            elseif type(v) ~= type(dst[k]) then
-                dst[k] = v
-            end
-        end
-
-        return dst
     end
-
-    CopyDefaults(CHARACTER_DEFAULTS, orbSellAndRepair_settings)
 end
 
 --------------------------------------------------------------------------------
--- Autorepair && junk seller
+-- Junk seller
 --------------------------------------------------------------------------------
 
-local function RegisterAutoRepairEvents()
-
-    local function RepairItemsAndSellTrash(self, event)
-        if (event == "MERCHANT_SHOW") then
-
-            if orbSellAndRepair_settings.VendorGreys then
-                local bag, slot
-                local total = 0
-                for bag = 0, 4 do
-                    for slot = 0, GetContainerNumSlots(bag) do
-                        local link = GetContainerItemLink(bag, slot)
-                        if link and (select(3, GetItemInfo(link)) == 0) then
-                            total = total + select(11, GetItemInfo(link))
-                            UseContainerItem(bag, slot)
-                        end
-                    end
-                end
-
-                if total > 0 then
-                    selfMessage(L.SELL_GREY .. GetCoinTextureString(total, " "));
-                end
+local function SellGreys()
+    local total = 0
+    for bag = 0, NUM_BAGS do
+        for slot = 1, C_Container.GetContainerNumSlots(bag) do
+            local info = C_Container.GetContainerItemInfo(bag, slot)
+            if info and info.quality == POOR_QUALITY and not info.hasNoValue and not info.isLocked then
+                local sellPrice = select(11, C_Item.GetItemInfo(info.itemID)) or 0
+                total = total + sellPrice * (info.stackCount or 1)
+                C_Container.UseContainerItem(bag, slot)
             end
-
-            if orbSellAndRepair_settings.AutoRepair and CanMerchantRepair() then
-                local repairAllCost, canRepair = GetRepairAllCost()
-                if canRepair then
-                    if orbSellAndRepair_settings.ReputationRepairLimit > UnitReaction("npc", "player") then
-                        selfMessage(L.REPAIR_REPUT)
-                    elseif repairAllCost > GetMoney() then
-                        selfMessage(L.REPAIR_MONEY)
-                    else
-                        local repairFromGuild = orbSellAndRepair_settings.UseGuildRepair 
-                            and IsInGuild() 
-                            and CanGuildBankRepair ~= nil 
-                            and CanGuildBankRepair()
-                        RepairAllItems(repairFromGuild)
-                        selfMessage(L.REPAIR_OK .. GetCoinTextureString(repairAllCost, " "));
-                    end
-                end
-            end
-
         end
     end
-
-    local f = CreateFrame("Frame")
-    f:RegisterEvent("MERCHANT_SHOW")
-    f:RegisterEvent("VARIABLES_LOADED")
-    f:SetScript("OnEvent", RepairItemsAndSellTrash)
+    if total > 0 then
+        selfMessage(L.SELL_GREY .. GetCoinTextureString(total))
+    end
 end
 
------------------------------------------------------------------------------
--- Options panel                                                          --
------------------------------------------------------------------------------
-local configurationPanelCreated = false
+--------------------------------------------------------------------------------
+-- Auto repair
+--------------------------------------------------------------------------------
 
-function CreateConfigurationPanel()
-    if configurationPanelCreated then
-        return nil
+local function CanUseGuildRepair()
+    return orbSellAndRepair_settings.UseGuildRepair
+        and IsInGuild()
+        and CanGuildBankRepair ~= nil
+        and CanGuildBankRepair()
+end
+
+local function Repair()
+    if not CanMerchantRepair() then
+        return
     end
-    configurationPanelCreated = true
 
-    local pre = _ .. "Config_"
+    local repairAllCost, canRepair = GetRepairAllCost()
+    if not canRepair or repairAllCost <= 0 then
+        return
+    end
 
-    local ConfigurationPanel = CreateFrame("Frame", pre .. "MainFrame");
-	ConfigurationPanel.name = _
-    InterfaceOptions_AddCategory(ConfigurationPanel)
+    local reaction = UnitReaction("npc", "player")
+    if reaction and orbSellAndRepair_settings.ReputationRepairLimit > reaction then
+        selfMessage(L.REPAIR_REPUT)
+        return
+    end
 
-    -- Title
-    local IntroMessageHeader = ConfigurationPanel:CreateFontString(nil, "ARTWORK","GameFontNormalLarge")
-	IntroMessageHeader:SetPoint("TOPLEFT", 10, -10)
-    IntroMessageHeader:SetText(_ .. " " .. GetAddOnMetadata(_, "Version"))
-    
-    -- AutoRepair
-    local AutoRepairBtn = CreateFrame("CheckButton", pre .. "AutoRepairBtn", ConfigurationPanel, "ChatConfigCheckButtonTemplate")
-    AutoRepairBtn:SetPoint("TOPLEFT", 10, -40)
-    getglobal(AutoRepairBtn:GetName().."Text"):SetText(L.AutoRepairBtn.text)
+    local fromGuild = CanUseGuildRepair()
+    if not fromGuild and repairAllCost > GetMoney() then
+        selfMessage(L.REPAIR_MONEY)
+        return
+    end
 
-    -- ReputationRepairLimit
-    local ReputSliderLbl = ConfigurationPanel:CreateFontString("ReputSliderLbl","ARTWORK","GameFontNormal")
-	ReputSliderLbl:SetPoint("TOPLEFT", 200, -80)
-    
-    local ReputSlider = CreateFrame("Slider", pre .. "ReputSlider", ConfigurationPanel, "OptionsSliderTemplate")
-	ReputSlider:SetMinMaxValues(4,8)
-	ReputSlider:SetValueStep(1)
-    ReputSlider:SetPoint("TOPLEFT", 40, -80)
-    ReputSlider.tooltip = "L.ReputSlider.tooltip"
-	getglobal(ReputSlider:GetName().."Text"):SetText(L.ReputSlider.text)
-	getglobal(ReputSlider:GetName().."High"):SetText(L.REPUTATIONS[8])
-	getglobal(ReputSlider:GetName().."Low"):SetText(L.REPUTATIONS[4])
-	ReputSlider:SetScript("OnValueChanged", function(self)
-        local iReput = math.floor(self:GetValue())
-        ReputSliderLbl:SetText(L.REPUTATIONS[iReput])
+    RepairAllItems(fromGuild and true or false)
+    selfMessage(L.REPAIR_OK .. GetCoinTextureString(repairAllCost))
+end
+
+local function OnMerchantShow()
+    if orbSellAndRepair_settings.VendorGreys then
+        SellGreys()
+    end
+    if orbSellAndRepair_settings.AutoRepair then
+        Repair()
+    end
+end
+
+--------------------------------------------------------------------------------
+-- Options panel (Settings API, The War Within / Midnight / Forever)
+--------------------------------------------------------------------------------
+
+local function RegisterSetting(category, key, label)
+    local default = CHARACTER_DEFAULTS[key]
+    local varType = type(default)
+    if Settings.VarType then
+        varType = (varType == "boolean") and Settings.VarType.Boolean or Settings.VarType.Number
+    end
+    return Settings.RegisterAddOnSetting(
+        category,
+        addonName .. "_" .. key,
+        key,
+        orbSellAndRepair_settings,
+        varType,
+        label,
+        default
+    )
+end
+
+local function CreateConfigurationPanel()
+    if not (Settings and Settings.RegisterVerticalLayoutCategory) then
+        return
+    end
+
+    local version = GetMetadata("Version")
+    local title = version and (addonName .. " " .. version) or addonName
+    local category = Settings.RegisterVerticalLayoutCategory(title)
+
+    -- Sell greys
+    local sellSetting = RegisterSetting(category, "VendorGreys", L.VendorGreysBtn.text)
+    Settings.CreateCheckbox(category, sellSetting)
+
+    -- Auto repair
+    local repairSetting = RegisterSetting(category, "AutoRepair", L.AutoRepairBtn.text)
+    Settings.CreateCheckbox(category, repairSetting)
+
+    -- Minimum reputation
+    local reputSetting = RegisterSetting(category, "ReputationRepairLimit", L.ReputSlider.text)
+    local options = Settings.CreateSliderOptions(4, 8, 1)
+    options:SetLabelFormatter(MinimalSliderWithSteppersMixin.Label.Right, function(value)
+        return L.REPUTATIONS[math.floor(value + 0.5)] or tostring(value)
     end)
+    Settings.CreateSlider(category, reputSetting, options, L.ReputSlider.tooltip)
 
-    -- UseGuildRepair
-    local UseGuildRepairBtn
+    -- Guild repair (only if the client has guild bank repairs)
     if CanGuildBankRepair ~= nil then
-        UseGuildRepairBtn = CreateFrame("CheckButton", pre .. "UseGuildRepairBtn", ConfigurationPanel, "ChatConfigCheckButtonTemplate")
-        UseGuildRepairBtn:SetPoint("TOPLEFT", 30, -110)
-        getglobal(UseGuildRepairBtn:GetName().."Text"):SetText(L.UseGuildRepairBtn.text)
+        local guildSetting = RegisterSetting(category, "UseGuildRepair", L.UseGuildRepairBtn.text)
+        Settings.CreateCheckbox(category, guildSetting)
     end
 
-    -- VendorGreys
-    local VendorGreysBtn = CreateFrame("CheckButton", pre .. "VendorGreysBtn", ConfigurationPanel, "ChatConfigCheckButtonTemplate")
-    VendorGreysBtn:SetPoint("TOPLEFT", 10, -140)
-    getglobal(VendorGreysBtn:GetName().."Text"):SetText(L.VendorGreysBtn.text)
-    
-    -- save
-    ConfigurationPanel.okay = function(self)
-        orbSellAndRepair_settings.AutoRepair = AutoRepairBtn:GetChecked()
-        if CanGuildBankRepair ~= nil then
-            orbSellAndRepair_settings.UseGuildRepair = UseGuildRepairBtn:GetChecked()
-        end
-        orbSellAndRepair_settings.ReputationRepairLimit = math.floor(ReputSlider:GetValue())
-        orbSellAndRepair_settings.VendorGreys = VendorGreysBtn:GetChecked()
-    end
-
-    -- cancel
-    ConfigurationPanel.cancel = function(self)
-        AutoRepairBtn:SetChecked(orbSellAndRepair_settings.AutoRepair)
-        if CanGuildBankRepair ~= nil then
-            UseGuildRepairBtn:SetChecked(orbSellAndRepair_settings.UseGuildRepair)
-        end
-        ReputSlider:SetValue(orbSellAndRepair_settings.ReputationRepairLimit)
-        VendorGreysBtn:SetChecked(orbSellAndRepair_settings.VendorGreys)
-    end
-
-    -- init
-    ConfigurationPanel.cancel()
+    Settings.RegisterAddOnCategory(category)
 end
 
------------------------------------------------------------------------------
--- Load the addon                                                          --
------------------------------------------------------------------------------
+--------------------------------------------------------------------------------
+-- Load the addon
+--------------------------------------------------------------------------------
 
 local f = CreateFrame("Frame")
-f:RegisterEvent("PLAYER_LOGIN")
 f:RegisterEvent("ADDON_LOADED")
-f:SetScript("OnEvent", function(self, event)
-    if event == "ADDON_LOADED" then
+f:RegisterEvent("MERCHANT_SHOW")
+f:SetScript("OnEvent", function(self, event, arg1)
+    if event == "ADDON_LOADED" and arg1 == addonName then
         LoadSettings()
         CreateConfigurationPanel()
-    elseif event == "PLAYER_LOGIN" then
-        RegisterAutoRepairEvents()
+        self:UnregisterEvent("ADDON_LOADED")
+    elseif event == "MERCHANT_SHOW" and orbSellAndRepair_settings then
+        OnMerchantShow()
     end
 end)
